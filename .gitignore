@@ -1,2 +1,4 @@
-sendpackets
-recvpackets
+/generate-ips-lfsr
+/generate-ips-random
+/sendpackets
+/recvpackets
