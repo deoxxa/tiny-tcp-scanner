@@ -8,8 +8,11 @@
 #include <time.h>
 #include <math.h>
 
+#include <pcap.h>
+
 #include "headers.h"
 
+#ifdef _DEBUG
 void dump(unsigned char* data, int len)
 {
   int i;
@@ -22,6 +25,14 @@ void dump(unsigned char* data, int len)
   }
 
   fprintf(stderr, "\n");
+}
+#endif
+
+char* fs_inet_ntop(unsigned long int ip, char* ip_str)
+{
+  ip = ntohl(ip);
+  sprintf(ip_str, "%lu.%lu.%lu.%lu", ((ip & 0xFF000000) >> 24), ((ip & 0x00FF0000) >> 16), ((ip & 0x0000FF00) >> 8), ((ip & 0x000000FF) >> 0));
+  return ip_str;
 }
 
 unsigned short checksum(unsigned short* ptr, int len)
@@ -40,7 +51,7 @@ unsigned short checksum(unsigned short* ptr, int len)
   return (unsigned short)(~sum);
 }
 
-int sendpacket(unsigned char* buf, int s, unsigned long int src_ip, int src_port, unsigned long int dst_ip, int dst_port)
+int sendpacket(unsigned char* buf, int s, unsigned long int src_ip, unsigned int src_port, unsigned long int dst_ip, int dst_port)
 {
   memset(buf, 0, sizeof(struct fs_ipv4hdr)+sizeof(struct fs_tcphdr));
 
@@ -97,16 +108,17 @@ int sendpacket(unsigned char* buf, int s, unsigned long int src_ip, int src_port
 
   if (sendto(s, buf, ip->length, 0, (struct sockaddr*)&din, sizeof(struct sockaddr_in)) < 0)
   {
+    char ip_str[INET_ADDRSTRLEN];
     fprintf(stderr, "[-] Could not send packet to %d: [%d] %s\n", s, errno, strerror(errno));
     fprintf(stderr, "    Arguments were: %d, %p, %d, 0, %p, %d\n", s, buf, ip->length, &din, sizeof(struct sockaddr_in));
-    fprintf(stderr, "    Remote address was: %lu.%lu.%lu.%lu:%d\n", ((dst_ip & 0xFF000000) >> 24), ((dst_ip & 0x00FF0000) >> 16), ((dst_ip & 0x0000FF00) >> 8), ((dst_ip & 0x000000FF) >> 0), dst_port);
+    fprintf(stderr, "    Remote address was: %s:%d\n", fs_inet_ntop(src_ip, ip_str), dst_port);
     return -1;
   }
 
   return 0;
 }
 
-int make_raw_socket()
+int make_raw_socket(char* src_interface)
 {
   int s = 0;
   int y = 1;
@@ -131,10 +143,20 @@ int make_raw_socket()
     fprintf(stderr, "[+] Socket option IPPROTO_IP/IP_HDRINCL set successfully\n");
   }
 
+  if (setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE, src_interface, strlen(src_interface)) < 0)
+  {
+    fprintf(stderr, "[-] Could not set socket option SOL_SOCKET/SO_BINDTODEVICE: [%d] %s\n", errno, strerror(errno));
+    return -3;
+  }
+  else
+  {
+    fprintf(stderr, "[+] Socket option SOL_SOCKET/SO_BINDTODEVICE set successfully\n");
+  }
+
   return s;
 }
 
-void send_packets(unsigned long int src_ip, int src_port, float tpps, short int pnum, short int* pptr)
+void send_packets(char* src_interface, unsigned long int src_ip, unsigned int src_port, float tpps, short int pnum, short int* pptr)
 {
   // init memory used for packet construction
   unsigned char buf [sizeof(struct fs_ipv4hdr) + sizeof(struct fs_tcphdr)];
@@ -175,7 +197,7 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
         if (sd > 0)
           close(sd);
         // recreate the socket
-        sd = make_raw_socket();
+        sd = make_raw_socket(src_interface);
         // go back one port
         if (p > 0)
           --p;
@@ -215,46 +237,113 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
 
 int main(int argc, char** argv)
 {
-  if (argc < 5)
-  {
-    if (argc > 0)
-      fprintf(stderr, "Usage: %s src_ip src_port packets_per_second port_1 [port_2 [port_3 [...]]]\n", argv[0]);
-    // in case we have no argv[0] (it can happen...)
-    else
-      fprintf(stderr, "Usage: ./sendpackets src_ip src_port packets_per_second port_1 [port_2 [port_3 [...]]]\n");
+  srand(time(NULL));
 
-    return -1;
+  if (getuid() != 0)
+  {
+    fprintf(stderr, "Sorry, I only run as root!\n");
+    exit(-1);
   }
 
-  unsigned long int src_ip = inet_addr(argv[1]);
-  short int src_port = atoi(argv[2]);
-  float tpps = atof(argv[3]);
-  short int pnum = argc-4;
-  short int* pptr = malloc(sizeof(short int)*pnum);
-  int i;
-  for (i=0;i<pnum;++i)
-    pptr[i] = atoi(argv[4+i]);
+  char* src_interface = NULL;
+  char* src_ip_str;
+  unsigned long int src_ip = 0;
+  unsigned short int src_port = 0;
+  float tpps = 1000;
+  short int pnum = 0;
+  short int* pptr = NULL;
 
-  if (src_ip <= 0 || src_ip >= 4294967295)
+  // Some variables that are used to hold various things
+  int i = 0;
+  char errbuf[PCAP_ERRBUF_SIZE];
+
+  int c;
+  while ((c = getopt(argc, argv, "i:s:p:r:h")) != -1)
+  {
+    switch (c)
+    {
+    case 'h':
+      fprintf(stderr, "Usage: %s [-i interface] [-s source ip] [-p source port] [-r packets/second] [-h] port_1 [port_2 [...]]\n", argv[0]);
+      exit(0);
+    case 'i':
+      src_interface = optarg;
+      break;
+    case 's':
+      src_ip_str = optarg;
+      src_ip = inet_addr(optarg);
+      break;
+    case 'p':
+      src_port = atoi(optarg);
+      break;
+    case 'r':
+      tpps = atof(optarg);
+      break;
+    }
+  }
+
+  if (optind < argc)
+  {
+    pnum = argc-optind;
+    pptr = malloc(sizeof(int)*pnum);
+    for (i=optind;i<argc;++i)
+      pptr[i-optind] = atoi(argv[i]);
+  }
+
+  fprintf(stderr, "[+] packets-send startup:\n");
+
+  if (src_interface == NULL)
+  {
+    fprintf(stderr, "[!] Source interface not specified, trying to autodetect...\n");
+    src_interface = pcap_lookupdev(errbuf);
+    if (src_interface == NULL)
+    {
+      fprintf(stderr, "[-] Couldn't get an interface: %s\n", errbuf);
+      exit(-1);
+    }
+    fprintf(stderr, "[+] Using %s\n", src_interface);
+  }
+
+  if (src_ip == 0)
+  {
+    src_ip_str = malloc(sizeof(char)*INET_ADDRSTRLEN);
+    fprintf(stderr, "[!] Source IP not specified, trying to autodetect...\n");
+    bpf_u_int32 tmp_net=0, tmp_mask=0;
+    if (pcap_lookupnet(src_interface, &tmp_net, &tmp_mask, errbuf) < 0)
+    {
+      fprintf(stderr, "[-] Couldn't get address: %s\n", errbuf);
+      exit(-1);
+    }
+    src_ip = tmp_net;
+    fprintf(stderr, "[+] Using %s\n", fs_inet_ntop(src_ip, src_ip_str));
+  }
+
+  if (src_port == 0)
+  {
+    fprintf(stderr, "[!] Source port not specified, choosing one at random...\n");
+    src_port = (random()%(65536-1024))+1024;
+    fprintf(stderr, "[+] Using %u\n", src_port);
+  }
+
+  if (src_ip < 0 || src_ip >= 4294967295)
   {
     fprintf(stderr, "[-] Source IP is invalid!\n");
     return -2;
   }
 
-  if (src_port <= 0 || src_port >= 65536)
+  if (src_port < 0 || src_port >= 65536)
   {
     fprintf(stderr, "[-] Source port is invalid!\n");
     return -3;
   }
 
-  if (tpps <= 0)
+  if (tpps < 0)
   {
     fprintf(stderr, "[-] Packets per second value is invalid!\n");
     return -4;
   }
 
-  fprintf(stderr, "[+] sendpackets startup:\n");
-  fprintf(stderr, "[+] Source IP: %s\n", argv[1]);
+  fprintf(stderr, "[+] Source interface: %s\n", src_interface);
+  fprintf(stderr, "[+] Source IP: %s\n", fs_inet_ntop(src_ip, src_ip_str));
   fprintf(stderr, "[+] Source Port: %u\n", src_port);
   fprintf(stderr, "[+] Packets per second: %f\n", tpps);
   fprintf(stderr, "[+] Number of ports to scan: %d\n", pnum);
@@ -263,7 +352,7 @@ int main(int argc, char** argv)
     fprintf(stderr, " %d", pptr[i]);
   fprintf(stderr, "\n");
 
-  send_packets(src_ip, src_port, tpps, pnum, pptr);
+  send_packets(src_interface, src_ip, src_port, tpps, pnum, pptr);
 
   free(pptr);
 }

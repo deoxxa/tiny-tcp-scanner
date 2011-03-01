@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <netinet/in.h>
+#include <unistd.h>
 
 #include <pcap.h>
 
@@ -24,49 +25,80 @@ void print_packet(u_char* args, const struct pcap_pkthdr* pkthdr, const u_char* 
 
 int main(int argc, char** argv)
 { 
-  if (argc < 3)
+  char        errbuf[PCAP_ERRBUF_SIZE];
+  char*       interface_dev = NULL;
+  bpf_u_int32 interface_mask;
+  bpf_u_int32 interface_net;
+  char*       filter_str = NULL;
+
+  int c;
+  while ((c = getopt(argc, argv, "i:f:h")) != -1)
   {
-    fprintf(stderr, "Usage: %s interface ip\n", argv[0]);
-    exit(0);
+    switch (c)
+    {
+    case 'h':
+      fprintf(stderr, "Usage: %s [-i interface] [-f filter string]\n", argv[0]);
+      exit(0);
+    case 'i':
+      interface_dev = optarg;
+      break;
+    case 'f':
+      filter_str = optarg;
+      break;
+    }
   }
 
-  char errbuf[PCAP_ERRBUF_SIZE];
-  char* dev = argv[1];
-  char* ip = argv[2];
+  fprintf(stderr, "[+] packets-recv startup:\n");
 
-  bpf_u_int32 maskp;
-  bpf_u_int32 netp;
-  if (pcap_lookupnet(dev, &netp, &maskp, errbuf) == -1)
+  if (interface_dev == NULL)
   {
-    fprintf(stderr, "Error (pcap_lookup): %s\n", errbuf);
+    fprintf(stderr, "[!] Source interface not specified, trying to autodetect...\n");
+    interface_dev = pcap_lookupdev(errbuf);
+    if (interface_dev == NULL)
+    {
+      fprintf(stderr, "[-] Couldn't get an interface: %s\n", errbuf);
+      exit(-1);
+    }
+    fprintf(stderr, "[+] Using %s\n", interface_dev);
+  }
+
+  if (pcap_lookupnet(interface_dev, &interface_net, &interface_mask, errbuf) == -1)
+  {
+    fprintf(stderr, "[-] Couldn't get network details: %s\n", errbuf);
     exit(-1);
   }
 
-  pcap_t* descr = pcap_open_live(dev, BUFSIZ, 1, -1, errbuf);
-  if (descr == NULL)
+  pcap_t* pcaph = pcap_open_live(interface_dev, BUFSIZ, 1, -1, errbuf);
+  if (pcaph == NULL)
   {
-    fprintf(stderr, "Error (pcap_open_live): %s\n", errbuf);
+    fprintf(stderr, "[-] Couldn't open interface: %s\n", errbuf);
     exit(-2);
   }
 
-  char filter[1024];
-  sprintf(filter, "dst host %s", ip);
-
-  struct bpf_program fp;
-  if (pcap_compile(descr, &fp, filter, 0, netp) == -1)
+  if (filter_str != NULL)
   {
-    fprintf(stderr, "Error: (pcap_compile): %s\n", pcap_geterr(descr));
-    exit(-3);
+    struct bpf_program fp;
+    if (pcap_compile(pcaph, &fp, filter_str, 0, interface_net) == -1)
+    {
+      fprintf(stderr, "[-] Couldn't compile filter string: %s\n", pcap_geterr(pcaph));
+      exit(-3);
+    }
+
+    if (pcap_setfilter(pcaph, &fp) == -1)
+    {
+      fprintf(stderr, "[-] Couldn't apply filter: %s\n", pcap_geterr(pcaph));
+      exit(-4);
+    }
+  }
+  else
+  {
+    filter_str = "none";
   }
 
-  if (pcap_setfilter(descr, &fp) == -1)
-  {
-    fprintf(stderr, "Error: (pcap_setfilter): %s\n", pcap_geterr(descr));
-    exit(-4);
-  }
+  fprintf(stderr, "[+] Device: %s\n", interface_dev);
+  fprintf(stderr, "[+] Filter: %s\n", filter_str);
 
-  u_char* args = NULL;
-  pcap_loop(descr, atoi(argv[1]), &print_packet, args);
+  pcap_loop(pcaph, 0, &print_packet, (u_char*)NULL);
 
   return 0;
 }
