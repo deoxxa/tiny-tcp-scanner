@@ -7,24 +7,21 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <math.h>
-#include <pthread.h>
 
 #include "headers.h"
-
-void lfsr_step(unsigned long int* lfsr) { *lfsr = (*lfsr >> 1) ^ (unsigned long int)(0 - (*lfsr & 1u) & 0xd0000001u); }
 
 void dump(unsigned char* data, int len)
 {
   int i;
   for (i=0;i<len;i++)
   {
-    if ((i % 16) == 0) { printf("    0x%04x:  ", i); }
-    printf("%02x", *data++);
-    if (((i+1) % 2) == 0) { printf(" "); }
-    if (((i+1) % 16) == 0) { printf("\n"); }
+    if ((i % 16) == 0) { fprintf(stderr, "    0x%04x:  ", i); }
+    fprintf(stderr, "%02x", *data++);
+    if (((i+1) % 2) == 0) { fprintf(stderr, " "); }
+    if (((i+1) % 16) == 0) { fprintf(stderr, "\n"); }
   }
 
-  printf("\n");
+  fprintf(stderr, "\n");
 }
 
 unsigned short checksum(unsigned short* ptr, int len)
@@ -86,15 +83,15 @@ int sendpacket(unsigned char* buf, int s, unsigned long int src_ip, int src_port
   ip->checksum = checksum((unsigned short int*)ip, (sizeof(struct fs_ipv4hdr) + sizeof(struct fs_tcphdr)));
 
 #ifdef _DEBUG
-  printf("[+] Packet:\n");
+  fprintf(stderr, "[+] Packet:\n");
   dump(buf, sizeof(struct fs_ipv4hdr)+sizeof(struct fs_tcphdr));
 
-  printf("[+] IP sum: 0x%04x\n", ip->checksum);
-  printf("[+] IP Portion:\n");
+  fprintf(stderr, "[+] IP sum: 0x%04x\n", ip->checksum);
+  fprintf(stderr, "[+] IP Portion:\n");
   dump(buf, sizeof(struct fs_ipv4hdr));
 
-  printf("[+] TCP sum: 0x%04x\n", tcp->checksum);
-  printf("[+] TCP Portion:\n");
+  fprintf(stderr, "[+] TCP sum: 0x%04x\n", tcp->checksum);
+  fprintf(stderr, "[+] TCP Portion:\n");
   dump((buf+sizeof(struct fs_ipv4hdr)), sizeof(struct fs_tcphdr));
 #endif
 
@@ -121,7 +118,7 @@ int make_raw_socket()
   }
   else
   {
-    printf("[+] Socket descriptor created: %d\n", s);
+    fprintf(stderr, "[+] Socket descriptor created: %d\n", s);
   }
 
   if (setsockopt(s, IPPROTO_IP, IP_HDRINCL, &y, sizeof(y)) < 0)
@@ -131,7 +128,7 @@ int make_raw_socket()
   }
   else
   {
-    printf("[+] Socket option IPPROTO_IP/IP_HDRINCL set successfully\n");
+    fprintf(stderr, "[+] Socket option IPPROTO_IP/IP_HDRINCL set successfully\n");
   }
 
   return s;
@@ -145,9 +142,6 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
   // create placeholder for socket
   int sd = 0;
 
-  // init the lfsr
-  unsigned long lfsr = 1;
-
   // work out how long the initial sleep time is to be (this will be adjusted later)
   struct timespec sleep_req;
   struct timespec sleep_rem;
@@ -160,20 +154,22 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
   float opps=0,cpps=0,rpps=0;
   time_t time_last = time(NULL);
 
-  printf("[+] Sending packets...\n");
-  do
-  {
-    // increment the lfsr
-    lfsr_step(&lfsr);
+  fprintf(stderr, "[+] Sending packets...\n");
 
-    if ((lfsr & 0x000000FF) == 0)
+  char              ip_char[17];
+  unsigned long int ip_int;
+  while (fgets(ip_char, 17, stdin))
+  {
+    ip_int = inet_addr(ip_char);
+
+    if ((ip_int & 0x000000FF) == 0)
       continue;
 
     // cycle through ports
     for (p=0;p<pnum;++p)
     {
       // send packet
-      if ((sd <= 0) || (sendpacket(buf, sd, src_ip, src_port, lfsr, pptr[p]) != 0))
+      if ((sd <= 0) || (sendpacket(buf, sd, src_ip, src_port, ip_int, pptr[p]) != 0))
       {
         // try to close the socket if necessary
         if (sd > 0)
@@ -203,8 +199,8 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
       else
         rpps = opps + (abs(opps-cpps)/10);
 
-      printf("[+] Packets sent: %d\n", packets);
-      printf("[+] Current real PPS is %f, adjusting new PPS to %f from %f to meet target PPS of %f\n", cpps, rpps, opps, tpps);
+      fprintf(stderr, "[+] Packets sent: %d to %d hosts\n", packets, packets/pnum);
+      fprintf(stderr, "[+] Current real PPS is %f, adjusting new PPS to %f from %f to meet target PPS of %f\n", cpps, rpps, opps, tpps);
 
       sleep_req.tv_sec = floor(1.0f/rpps);
       sleep_req.tv_nsec = (((1.0f/rpps) - floor(1.0f/rpps))*1000000000);
@@ -212,7 +208,7 @@ void send_packets(unsigned long int src_ip, int src_port, float tpps, short int 
       packets_last = packets;
       time_last = time(NULL);
     }
-  } while (lfsr != 1u);
+  }
 
   close(sd);
 }
@@ -257,19 +253,17 @@ int main(int argc, char** argv)
     return -4;
   }
 
-  printf("[+] Source IP: %s\n", argv[1]);
-  printf("[+] Source Port: %u\n", src_port);
-  printf("[+] Packets per second: %f\n", tpps);
-  printf("[+] Number of ports to scan: %d\n", pnum);
-  printf("[+] Ports:");
+  fprintf(stderr, "[+] sendpackets startup:\n");
+  fprintf(stderr, "[+] Source IP: %s\n", argv[1]);
+  fprintf(stderr, "[+] Source Port: %u\n", src_port);
+  fprintf(stderr, "[+] Packets per second: %f\n", tpps);
+  fprintf(stderr, "[+] Number of ports to scan: %d\n", pnum);
+  fprintf(stderr, "[+] Ports:");
   for (i=0;i<pnum;++i)
-    printf(" %d", pptr[i]);
-  printf("\n");
+    fprintf(stderr, " %d", pptr[i]);
+  fprintf(stderr, "\n");
 
   send_packets(src_ip, src_port, tpps, pnum, pptr);
-
-  while (1)
-    sleep(1);
 
   free(pptr);
 }
