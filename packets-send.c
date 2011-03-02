@@ -218,10 +218,12 @@ void send_packets(char* src_interface, unsigned long int src_ip, unsigned int sr
 
       if (cpps>tpps)
         rpps = opps - (abs(opps-cpps)/10);
-      else
+      else if(cpps<tpps)
         rpps = opps + (abs(opps-cpps)/10);
+      else
+        rpps = opps;
 
-      fprintf(stderr, "[+] Packets sent: %d to %d hosts\n", packets, packets/pnum);
+      fprintf(stderr, "[+] Packets sent: %d to %d hosts\n", packets, pnum?(packets/pnum):0);
       fprintf(stderr, "[+] Current real PPS is %f, adjusting new PPS to %f from %f to meet target PPS of %f\n", cpps, rpps, opps, tpps);
 
       sleep_req.tv_sec = floor(1.0f/rpps);
