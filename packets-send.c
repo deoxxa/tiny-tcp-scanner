@@ -110,8 +110,8 @@ int sendpacket(unsigned char* buf, int s, unsigned long int src_ip, unsigned int
   {
     char ip_str[INET_ADDRSTRLEN];
     fprintf(stderr, "[-] Could not send packet to %d: [%d] %s\n", s, errno, strerror(errno));
-    fprintf(stderr, "    Arguments were: %d, %p, %d, 0, %p, %d\n", s, buf, ip->length, &din, sizeof(struct sockaddr_in));
-    fprintf(stderr, "    Remote address was: %s:%d\n", fs_inet_ntop(src_ip, ip_str), dst_port);
+    fprintf(stderr, "  |- Arguments were: %d, %p, %d, 0, %p, %d\n", s, buf, ip->length, &din, sizeof(struct sockaddr_in));
+    fprintf(stderr, "  `- Remote address was: %s:%d\n", fs_inet_ntop(dst_ip, ip_str), dst_port);
     return -1;
   }
 
@@ -184,14 +184,19 @@ void send_packets(char* src_interface, unsigned long int src_ip, unsigned int sr
   {
     ip_int = inet_addr(ip_char);
 
-    if ((ip_int & 0x000000FF) == 0)
-      continue;
+    if ((htonl(ip_int) & 0x000000FF) == 0)
+    {
+      printf("%s\n", ip_char);
+      printf("%d\n", (htonl(ip_int) & 0x000000FF));
+      //continue;
+    }
 
     // cycle through ports
     for (p=0;p<pnum;++p)
     {
+      sendpacket(buf, sd, src_ip, src_port, ip_int, pptr[p]);
       // send packet
-      if ((sd <= 0) || (sendpacket(buf, sd, src_ip, src_port, ip_int, pptr[p]) != 0))
+      if (!sd)
       {
         // try to close the socket if necessary
         if (sd > 0)
@@ -357,4 +362,6 @@ int main(int argc, char** argv)
   send_packets(src_interface, src_ip, src_port, tpps, pnum, pptr);
 
   free(pptr);
+
+  exit(0);
 }
