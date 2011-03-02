@@ -161,8 +161,8 @@ void send_packets(char* src_interface, unsigned long int src_ip, unsigned int sr
   // init memory used for packet construction
   unsigned char buf [sizeof(struct fs_ipv4hdr) + sizeof(struct fs_tcphdr)];
 
-  // create placeholder for socket
-  int sd = 0;
+  // initialise socket
+  int sd = make_raw_socket(src_interface);
 
   // work out how long the initial sleep time is to be (this will be adjusted later)
   struct timespec sleep_req;
@@ -184,12 +184,8 @@ void send_packets(char* src_interface, unsigned long int src_ip, unsigned int sr
   {
     ip_int = inet_addr(ip_char);
 
-    if ((htonl(ip_int) & 0x000000FF) == 0)
-    {
-      printf("%s\n", ip_char);
-      printf("%d\n", (htonl(ip_int) & 0x000000FF));
-      //continue;
-    }
+    if ((htonl(ip_int) & 0x000000FF) == 0 || ((htonl(ip_int) & 0xFF000000) >> 24) == 0)
+      continue;
 
     // cycle through ports
     for (p=0;p<pnum;++p)
